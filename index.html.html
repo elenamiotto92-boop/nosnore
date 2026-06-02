@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prototipo Anti-Russamento</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; text-align: center; background-color: #f4f4f9; }
+        .container { max-width: 500px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        button { padding: 12px 24px; font-size: 16px; margin: 10px; cursor: pointer; border: none; border-radius: 6px; color: white; font-weight: bold; }
+        #btn-start { background-color: #28a745; }
+        #btn-start:disabled { background-color: #a3d7b0; cursor: not-allowed; }
+        #btn-stop { background-color: #dc3545; }
+        #btn-stop:disabled { background-color: #eeb0b6; cursor: not-allowed; }
+        #status { font-weight: bold; margin-top: 20px; color: #555; }
+        
+        /* Stile della barra del volume */
+        .bar-container { width: 100%; background: #e9ecef; margin: 30px auto; height: 30px; border-radius: 15px; overflow: hidden; box-shadow: inset 0 2px 5px rgba(0,0,0,0.1); }
+        #volume-bar { width: 0%; height: 100%; background: #007bff; transition: width 0.05s ease; }
+        
+        /* Stile del cursore di sensibilità */
+        .slider-container { margin: 20px 0; padding: 15px; background-color: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6; }
+        .slider-container label { font-weight: bold; color: #333; display: block; margin-bottom: 10px; }
+        #threshold-slider { width: 100%; cursor: pointer; }
+        .slider-help { font-size: 12px; color: #6c757d; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h2>Rilevatore Anti-Russamento</h2>
+        
+        <div class="slider-container">
+            <label for="threshold-slider">Soglia di Rumore: <span id="threshold-value">70</span></label>
+            <input type="range" id="threshold-slider" min="10" max="200" value="70">
+            <div class="slider-help">Sposta a DESTRA per renderlo meno sensibile (ignora i respiri).<br>Sposta a SINISTRA per renderlo più sensibile.</div>
+        </div>
+
+        <button id="btn-start">Inizia Ascolto</button>
+        <button id="btn-stop" disabled>Ferma Ascolto</button>
+
+        <div class="bar-container">
+            <div id="volume-bar"></div>
+        </div>
+
+        <p id="status">Stato: In attesa di avvio...</p>
+    </div>
+
+    <script>
+        let audioContext;
+        let microphone;
+        let analyser;
+        let animationId;
+        let isListening = false;
+        let lastTriggerTime = 0;
+
+        // La soglia ora è una variabile modificabile dal cursore
+        let sogliaRumore = 70; 
+        const COOLDOWN_MS = 4000; 
+
+        // Caricamento del file audio
+        const mioSuono = new Audio('richiamo.mp4');
+
+        // Elementi dell'interfaccia
+        const btnStart = document.getElementById('btn-start');
+        const btnStop = document.getElementById('btn-stop');
+        const volumeBar = document.getElementById('volume-bar');
+        const statusText = document.getElementById('status');
+        const thresholdSlider = document.getElementById('threshold-slider');
+        const thresholdValue = document.getElementById('threshold-value');
+
+        // Aggiorna la soglia quando muovi il cursore
+        thresholdSlider.addEventListener('input', function() {
+            sogliaRumore = parseInt(this.value);
+            thresholdValue.innerText = sogliaRumore;
+        });
+
+        function playTriggerSound() {
+            mioSuono.currentTime = 0; 
+            mioSuono.play().catch(error => {
+                console.log("Errore audio:", error);
+            });
+        }
+
+        async function startListening() {
+            try {
+                // Sblocca l'audio per i browser moderni
+                mioSuono.play().then(() => {
+                    mioSuono.pause();
+                    mioSuono.currentTime = 0;
+                }).catch(() => {});
+
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                microphone = audioContext.createMediaStreamSource(stream);
+                analyser = audioContext.createAnalyser();
+
+                analyser.fftSize = 256;
+                microphone.connect(analyser);
+                
+                isListening = true;
+                btnStart.disabled = true;
+                btnStop.disabled = false;
+                statusText.innerText = "Stato: Ascolto in corso...";
+                statusText.style.color = "#28a745";
+
+                checkVolume();
+
+            } catch (err) {
+                alert("Errore nell'accesso al microfono: " + err);
+            }
+        }
+
+        function stopListening() {
+            isListening = false;
+            cancelAnimationFrame(animationId);
+            if (audioContext) audioContext.close();
+
+            btnStart.disabled = false;
+            btnStop.disabled = true;
+            volumeBar.style.width = '0%';
+            statusText.innerText = "Stato: Ascolto interrotto.";
+            statusText.style.color = "#555";
+        }
+
+        function checkVolume() {
+            if (!isListening) return;
+
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            analyser.getByteFrequencyData(dataArray);
+
+            let sum = 0;
+            for (let i = 0; i < bufferLength; i++) {
+                sum += dataArray[i];
+            }
+            const averageVolume = sum / bufferLength;
+
+            // La barra mostra sempre il volume grezzo
+            volumeBar.style.width = Math.min((averageVolume / 255) * 100 * 3, 100) + '%';
+
+            const now = Date.now();
+            
+            // Controlla se il rumore supera la soglia impostata dal cursore
+            if (averageVolume > sogliaRumore && (now - lastTriggerTime > COOLDOWN_MS)) {
+                statusText.innerText = "⚠️ Rumore rilevato! Riproduco suono...";
+                statusText.style.color = "#dc3545";
+                
+                playTriggerSound();
+                lastTriggerTime = now;
+
+                setTimeout(() => {
+                    if(isListening) {
+                        statusText.innerText = "Stato: Ascolto in corso...";
+                        statusText.style.color = "#28a745";
+                    }
+                }, 1500);
+            }
+
+            animationId = requestAnimationFrame(checkVolume);
+        }
+
+        btnStart.addEventListener('click', startListening);
+        btnStop.addEventListener('click', stopListening);
+    </script>
+</body>
+</html>
